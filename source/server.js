@@ -367,7 +367,7 @@ console.log("GOT error:", err.code, err.stack);
                 });
                 return res.end();
             }
-            if (vhosts[host].expose) {
+            if (vhosts[host] && vhosts[host].expose) {
                 return proceed();
             }
             return ensureSession(null, cookies["x-pio-server-sid"], function(err, sessionId) {
@@ -383,7 +383,7 @@ console.log("GOT error:", err.code, err.stack);
                             payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
                         }
                         payload.push('setTimeout(function() {');
-                            payload.push('window.location.href = "' + pioConfig.config.adminUrl + '";');
+                            payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '." + window.location.host;');
                         payload.push('}, 3 * 1000);');
                         payload.push('</script>');
                         payload.push('Redirecting after initializing session ...');
@@ -406,7 +406,7 @@ console.log("GOT error:", err.code, err.stack);
         }
 
         var host = req.headers.host.split(":").shift();
-        if (!vhosts[host]) {
+        if (!vhosts[host] && host !== pioConfig.config.pio.hostname) {
             res.writeHead(404);
             return res.end("Virtual host '" + host + "' not found!");
         }
