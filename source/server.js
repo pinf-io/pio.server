@@ -2,6 +2,8 @@
 const ASSERT = require("assert");
 const PATH = require("path");
 const FS = require("fs-extra");
+const URL = require("url");
+const QUERYSTRING = require("querystring");
 const EVENTS = require("events");
 const HTTP = require('http');
 const DNODE = require('dnode');
@@ -10,6 +12,7 @@ const DEEPMERGE = require("deepmerge");
 const UUID = require("uuid");
 const HTTP_PROXY = require("http-proxy");
 const CRYPTO = require("crypto");
+const MEMCACHED = require('memcached');
 
 
 function main(callback) {
@@ -23,6 +26,98 @@ console.log(JSON.stringify(pioConfig, null, 4));
     var authCode = CRYPTO.createHash("sha1");
     authCode.update(["auth-code", pioConfig.config.pio.instanceId, pioConfig.config.pio.instanceSecret].join(":"));
     authCode = authCode.digest("hex");
+
+
+    var sessions = {};
+    var memcached = null;
+    // @see https://github.com/3rd-Eden/node-memcached
+    if (pioConfig.config.memcachedHost) {
+        function tryToConnect() {
+            // First see if there is a server available at all.
+            // If not we retry at configured interval until successful.
+            var connection = new MEMCACHED(pioConfig.config.memcachedHost, {
+                failures: 1,
+                retries: 1,
+                timeout: 2 * 1000,
+                remove: true
+            });
+            return connection.stats(function(err, stats) {
+                if (err) {
+                    if (err.code !== "ECONNREFUSED") {
+                        console.error("err", err.stack);
+                    }
+                    setTimeout(function() {
+                        tryToConnect();
+                    }, 3 * 1000);
+                    return;
+                }
+                connection.end();
+                console.log("Connecting to memcached server: " + pioConfig.config.memcachedHost);
+                // We found a server so now we need to setup a connection with proper parameters.
+                memcached = new MEMCACHED(pioConfig.config.memcachedHost, {
+                    failures: 10,
+                    retries: 10,
+                    reconnect: 5 * 1000,
+                    timeout: 3 * 1000,
+                    retry: 5 * 1000
+                });
+                // Periodically touch sessions in DB
+                // TODO: Configure session timeout.
+                setInterval(function() {
+                    console.log("Touch memcache sessions: " + Object.keys(sessions).length);
+                    for (var id in sessions) {
+                        memcached.touch(id, 60 * 60, function (err) {
+                            if (err) {
+                                console.log("error touching memcache entry", err);
+                            }
+                        });
+                    }
+                }, 60 * 5 * 1000);
+            });
+        }
+        tryToConnect();
+    }
+    function makeSession(callback) {
+        var id = UUID.v4();
+        console.log("Create new session!");
+        if (memcached) {
+            // TODO: Configure session timeout.
+            return memcached.set(id, "", 60 * 60, function (err) {
+                if (err) return callback(err);
+                sessions[id] = "";
+                return callback(null, id);
+            });
+        }
+        sessions[id] = "";
+        return callback(null, id);
+    }
+    function ensureSession(_authCode, id, callback) {
+        if (!id) {
+            if (_authCode === authCode) {
+                return makeSession(callback);
+            }
+            // Not authorized: No session id and no auth code to create session id!
+            return callback(null, false);
+        }
+        if (sessions[id]) {
+            return callback(null, id);
+        }
+        if (memcached) {
+            return memcached.get(id, function(err, data) {
+                if (err) {
+                    console.error("error getting from memcached", err);
+                    // Not authorized: session id not found!
+                    return callback(null, false);
+                }
+                sessions[id] = data;
+                return callback(null, id);
+            });
+        }
+        // Not authorized: session id not found!
+        return callback(null, false);
+    }
+
+
 
     var dnode = DNODE(function(client) {
 
@@ -225,6 +320,14 @@ console.log("GOT error:", err.code, err.stack);
     for (var pluginId in  pioConfig["config.plugin"]) {
         for (var hostname in pioConfig["config.plugin"][pluginId]) {
             if (pioConfig["config.plugin"][pluginId].vhosts) {
+                var _vhosts = pioConfig["config.plugin"][pluginId].vhosts;
+                for (var host in _vhosts) {
+                    if (typeof _vhosts[host] === "string") {
+                        _vhosts[host] = {
+                            "target": _vhosts[host]
+                        };
+                    }
+                }
                 vhosts = DEEPMERGE(vhosts, pioConfig["config.plugin"][pluginId].vhosts);
             }
         }
@@ -238,50 +341,120 @@ console.log("GOT error:", err.code, err.stack);
             res.writeHead(500);
             return res.end("Internal server error!");
         }
-        try {
-            if (req.url === "/.instance-id/" + pioConfig.config["pio"].instanceId) {
-                res.writeHead(204);
-                return res.end();
-            }
-            var host = req.headers.host.split(":").shift();
-            if (!vhosts[host]) {
-                res.writeHead(404);
-                return res.end("Virtual host '" + host + "' not found!");
-            }
-            console.log("Proxy request", req.url, req.headers, "for", "http://" + vhosts[host]);
+        var urlParts = URL.parse(req.url);
+        var qs = urlParts.query ? QUERYSTRING.parse(urlParts.query) : {};
 
-
-            var origin = null;
-            if (req.headers.origin) {
-                origin = req.headers.origin;
-            } else
-            if (req.headers.host) {
-                origin = [
-                    (pioConfig.env.PORT === 443) ? "https" : "http",
-                    "://",
-                    req.headers.host
-                ].join("");
-            }
-            res.setHeader("Access-Control-Allow-Methods", "GET");
-            res.setHeader("Access-Control-Allow-Credentials", "true");
-            res.setHeader("Access-Control-Allow-Origin", origin);
-            res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-            if (req.method === "OPTIONS") {
-                return res.end();
-            }
-
-            return proxy.web(req, res, {
-                target: "http://" + vhosts[host]
-            }, function(err) {
-                if (err.code === "ECONNREFUSED") {
-                    res.writeHead(502);
-                    return res.end("Bad Gateway");
-                }
-                return respond500(err);
+        // @source http://stackoverflow.com/a/3409200/330439
+        function parseCookies(request) {
+            var list = {},
+                rc = request.headers.cookie;
+            rc && rc.split(';').forEach(function( cookie ) {
+                var parts = cookie.split('=');
+                list[parts.shift().trim()] = unescape(parts.join('='));
             });
-        } catch(err) {
-            return respond500(err);
+            return list;
         }
+
+        var cookies = parseCookies(req);
+
+        function ensureAuthorized(proceed) {
+            // TODO: Hook in more generically and document this route.
+            if (urlParts.pathname === "/.set-session-cookie" && qs.sid) {
+                res.writeHead(204, {
+                    'Set-Cookie': 'x-pio-server-sid=' + qs.sid,
+                    'Content-Type': 'text/plain',
+                    'Content-Length': "0"
+                });
+                return res.end();
+            }
+            if (vhosts[host].expose) {
+                return proceed();
+            }
+            return ensureSession(null, cookies["x-pio-server-sid"], function(err, sessionId) {
+                if (err) return respond500(err);
+                if (qs["auth-code"] === authCode) {
+                    return ensureSession(qs["auth-code"], null, function(err, sessionId) {
+                        if (err) return respond500(err);
+                        var payload = [
+                            '<script>'
+                        ];
+                        for (var host in vhosts) {
+                            // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
+                            payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                        }
+                        payload.push('setTimeout(function() {');
+                            payload.push('window.location.href = "' + pioConfig.config.adminUrl + '";');
+                        payload.push('}, 3 * 1000);');
+                        payload.push('</script>');
+                        payload.push('Redirecting after initializing session ...');
+                        payload = payload.join("\n");
+                        res.writeHead(200, {
+                            'Set-Cookie': 'x-pio-server-sid=' + sessionId,
+                            'Content-Type': 'text/html',
+                            'Content-Length': payload.length
+                        });
+                        res.end(payload);
+                        return;
+                    });
+                }
+                if (!sessionId || sessionId !== cookies["x-pio-server-sid"]) {
+                    res.writeHead(403);
+                    return res.end("Forbidden");
+                }
+                return proceed(null);
+            });
+        }
+
+        var host = req.headers.host.split(":").shift();
+        if (!vhosts[host]) {
+            res.writeHead(404);
+            return res.end("Virtual host '" + host + "' not found!");
+        }
+
+        var origin = null;
+        if (req.headers.origin) {
+            origin = req.headers.origin;
+        } else
+        if (req.headers.host) {
+            origin = [
+                (pioConfig.env.PORT === 443) ? "https" : "http",
+                "://",
+                req.headers.host
+            ].join("");
+        }
+        res.setHeader("Access-Control-Allow-Methods", "GET");
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Cookie");
+        if (req.method === "OPTIONS") {
+            return res.end();
+        }
+
+        return ensureAuthorized(function() {
+
+            try {
+
+                // TODO: Hook in more generically and document this route.
+                if (req.url === "/.instance-id/" + pioConfig.config["pio"].instanceId) {
+                    res.writeHead(204);
+                    return res.end();
+                }
+
+//                console.log("Proxy request", req.url, "for", "http://" + vhosts[host]);
+
+                return proxy.web(req, res, {
+                    target: "http://" + vhosts[host].target
+                }, function(err) {
+                    if (err.code === "ECONNREFUSED") {
+                        res.writeHead(502);
+                        return res.end("Bad Gateway");
+                    }
+                    return respond500(err);
+                });
+            } catch(err) {
+                return respond500(err);
+            }
+        });
     });
     var httpServer = server.listen(pioConfig.env.PORT, "0.0.0.0");
     console.log("Listening on: http://0.0.0.0:" + pioConfig.env.PORT);
