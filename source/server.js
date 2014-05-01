@@ -18,7 +18,7 @@ const MEMCACHED = require('memcached');
 function main(callback) {
 
     var pioConfig = FS.readJsonSync(PATH.join(__dirname, "../.pio.json"));
-console.log(JSON.stringify(pioConfig, null, 4));
+//console.log(JSON.stringify(pioConfig, null, 4));
 
     ASSERT.equal(typeof pioConfig.env.PORT, "number");
     ASSERT.equal(typeof pioConfig.env.DNODE_PORT, "number");
@@ -99,7 +99,7 @@ console.log(JSON.stringify(pioConfig, null, 4));
             // Not authorized: No session id and no auth code to create session id!
             return callback(null, false);
         }
-        if (sessions[id]) {
+        if (typeof sessions[id] !== "undefined") {
             return callback(null, id);
         }
         if (memcached) {
@@ -332,7 +332,7 @@ console.log("GOT error:", err.code, err.stack);
             }
         }
     }
-    console.log("vhosts", vhosts);
+    console.log("vhosts", JSON.stringify(vhosts, null, 4));
     var proxy = HTTP_PROXY.createProxyServer({});
     var server = HTTP.createServer(function(req, res) {
         function respond500(err) {
