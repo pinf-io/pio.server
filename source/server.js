@@ -405,9 +405,10 @@ console.log("GOT error:", err.code, err.stack);
             });
         }
 
-        var host = req.headers.host.split(":").shift();
+        var host = (req.headers.host && req.headers.host.split(":").shift()) || null;
         if (!vhosts[host] && host !== pioConfig.config.pio.hostname) {
             res.writeHead(404);
+            console.error("Virtual host '" + host + "' not found!", req.url, req.headers);
             return res.end("Virtual host '" + host + "' not found!");
         }
 
