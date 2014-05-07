@@ -441,6 +441,12 @@ console.log("GOT error:", err.code, err.stack);
                     return res.end();
                 }
 
+                if (!vhosts[host]) {
+                    res.writeHead(404);
+                    console.error("Virtual host '" + host + "' not found!", req.url, req.headers);
+                    return res.end("Virtual host '" + host + "' not found!");
+                }
+
 //                console.log("Proxy request", req.url, "for", "http://" + vhosts[host]);
 
                 return proxy.web(req, res, {
