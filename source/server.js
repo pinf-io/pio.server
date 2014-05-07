@@ -328,7 +328,7 @@ console.log("GOT error:", err.code, err.stack);
                         };
                     }
                 }
-                vhosts = DEEPMERGE(vhosts, pioConfig["config.plugin"][pluginId].vhosts);
+                vhosts = DEEPMERGE(vhosts, _vhosts);
             }
         }
     }
