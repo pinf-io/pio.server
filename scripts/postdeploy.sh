@@ -6,7 +6,7 @@ NODE_VERSION="v0.10.26"
 CONFIGURED_DIR=$(date +%s%N)
 
 
-sudo apt-get -y install git-core 
+sudo apt-get -y install git-core realpath
 
 
 if [ ! -d "configured/$CONFIGURED_DIR" ]; then
@@ -40,6 +40,9 @@ rm -f live || true
 ln -s configured/$CONFIGURED_DIR live
 
 
+sudo chmod -Rf ug+x "$PIO_SERVICE_PATH/live/scripts"
+
+
 launchScript='
 #!/bin/bash -e
 . '$PIO_BIN_PATH'/activate.sh
@@ -48,7 +51,7 @@ export PORT='$PORT'
 '$PIO_SERVICE_PATH'/packages/node/bin/node '$PIO_SERVICE_PATH'/live/install/server.js >> '$PIO_SERVICE_LOG_BASE_PATH'.log 2>&1 
 '
 echo "$launchScript" | sudo tee $PIO_SCRIPTS_PATH/_launch.sh
-sudo chmod u+x $PIO_SCRIPTS_PATH/_launch.sh
+sudo chmod ug+x $PIO_SCRIPTS_PATH/_launch.sh
 
 
 initScript='

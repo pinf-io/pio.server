@@ -225,15 +225,19 @@ console.log("GOT error:", err.code, err.stack);
                         ].concat(args.commands).join("\n"), function(err) {
                             if (err) return callback(err);
                             var env = process.env;
-                            env.HOME = "/home/" + pioConfig.config["pio.vm"].user;
+                            if (pioConfig.config["pio.vm"].user === "root") {
+                                env.HOME = "/root";
+                            } else {
+                                env.HOME = "/home/" + pioConfig.config["pio.vm"].user;
+                            }
         console.log("env", env);
                             var proc = SPAWN("sh", [
                                 commandsFilePath
                             ], {
                                 cwd: args.cwd,
-                                env: env,
-                                uid: 1000,
-                                gid: 1000
+                                env: env
+//                                uid: 1000,
+//                                gid: 1000
                             });
                             function allDone(code) {
                                 if (!callback) {
