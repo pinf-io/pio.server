@@ -361,6 +361,17 @@ console.log("GOT error:", err.code, err.stack);
 
         var cookies = parseCookies(req);
 
+        var originalHost = (req.headers.host && req.headers.host.split(":").shift()) || null;
+        var host = null;
+        var byIP = false;
+        // If accessing by IP we convert the IP to our default hostname.
+        if (originalHost === pioConfig.config['pio.vm'].ip) {
+            byIP = true;
+            host = pioConfig.config['pio'].hostname;
+        } else {
+            host = originalHost;
+        }
+
         function ensureAuthorized(proceed) {
             // TODO: Hook in more generically and document this route.
             if (urlParts.pathname === "/.set-session-cookie" && qs.sid) {
@@ -384,10 +395,26 @@ console.log("GOT error:", err.code, err.stack);
                         ];
                         for (var host in vhosts) {
                             // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
-                            payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                            if (byIP) {
+                                var target = vhosts[host].target.split(":");
+                                payload.push('document.write(\'<img src="//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                             } else {
+                                payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                            }
                         }
                         payload.push('setTimeout(function() {');
+                        if (byIP) {
+                            if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
+                                var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
+                                payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
+                            } else {
+                                res.writeHead(404);
+                                console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
+                                return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
+                            }
+                        } else {
                             payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '." + window.location.host;');
+                        }
                         payload.push('}, 3 * 1000);');
                         payload.push('</script>');
                         payload.push('Redirecting after initializing session ...');
@@ -409,7 +436,6 @@ console.log("GOT error:", err.code, err.stack);
             });
         }
 
-        var host = (req.headers.host && req.headers.host.split(":").shift()) || null;
         if (!vhosts[host] && host !== pioConfig.config.pio.hostname) {
             res.writeHead(404);
             console.error("Virtual host '" + host + "' not found!", req.url, req.headers);
