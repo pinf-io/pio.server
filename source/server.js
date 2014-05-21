@@ -225,20 +225,24 @@ console.log("GOT error:", err.code, err.stack);
                         ].concat(args.commands).join("\n"), function(err) {
                             if (err) return callback(err);
                             var env = process.env;
+                            var opts = {
+                                cwd: args.cwd,
+                                env: env
+                            };
                             if (pioConfig.config["pio.vm"].user === "root") {
                                 env.HOME = "/root";
                             } else {
                                 env.HOME = "/home/" + pioConfig.config["pio.vm"].user;
+                                // TODO: Determine user and group integers dynamically based on user.
+                                opts.uid = 1000;
+                                opts.gid = 1000;
                             }
         console.log("env", env);
+        console.log("opts", opts);
+
                             var proc = SPAWN("sh", [
                                 commandsFilePath
-                            ], {
-                                cwd: args.cwd,
-                                env: env
-//                                uid: 1000,
-//                                gid: 1000
-                            });
+                            ], opts);
                             function allDone(code) {
                                 if (!callback) {
                                     return;
