@@ -158,7 +158,7 @@ console.log("GOT error:", err.code, err.stack);
             });
         }
 
-        this.info = function (args, callback) {
+        this.config = function (args, callback) {
             callback = normalizeCallback(callback);
             return authorize(args, callback, function() {
                 try {

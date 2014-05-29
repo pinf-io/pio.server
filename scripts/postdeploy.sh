@@ -6,6 +6,7 @@ NODE_VERSION="v0.10.26"
 CONFIGURED_DIR=$(date +%s%N)
 
 
+sudo apt-get -y update
 sudo apt-get -y install git-core realpath
 
 
