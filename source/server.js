@@ -341,14 +341,11 @@ console.log("GOT error:", err.code, err.stack);
         }
     }
     console.log("vhosts", JSON.stringify(vhosts, null, 4));
-    var proxy = HTTP_PROXY.createProxyServer({});
-    var server = HTTP.createServer(function(req, res) {
-        function respond500(err) {
-            console.error("error request", req.url);
-            console.error(err.stack);
-            res.writeHead(500);
-            return res.end("Internal server error!");
-        }
+
+
+
+    function ensureAuthorized(req, res, callback) {
+
         var urlParts = URL.parse(req.url);
         var qs = urlParts.query ? QUERYSTRING.parse(urlParts.query) : {};
 
@@ -365,6 +362,7 @@ console.log("GOT error:", err.code, err.stack);
 
         var cookies = parseCookies(req);
 
+
         var originalHost = (req.headers.host && req.headers.host.split(":").shift()) || null;
         var host = null;
         var byIP = false;
@@ -374,70 +372,6 @@ console.log("GOT error:", err.code, err.stack);
             host = pioConfig.config['pio'].hostname;
         } else {
             host = originalHost;
-        }
-
-        function ensureAuthorized(proceed) {
-            // TODO: Hook in more generically and document this route.
-            if (urlParts.pathname === "/.set-session-cookie" && qs.sid) {
-                res.writeHead(204, {
-                    'Set-Cookie': 'x-pio-server-sid=' + qs.sid,
-                    'Content-Type': 'text/plain',
-                    'Content-Length': "0"
-                });
-                return res.end();
-            }
-            if (vhosts[host] && vhosts[host].expose) {
-                return proceed();
-            }
-            return ensureSession(null, cookies["x-pio-server-sid"], function(err, sessionId) {
-                if (err) return respond500(err);
-                if (qs["auth-code"] === authCode) {
-                    return ensureSession(qs["auth-code"], null, function(err, sessionId) {
-                        if (err) return respond500(err);
-                        var payload = [
-                            '<script>'
-                        ];
-                        for (var host in vhosts) {
-                            // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
-                            if (byIP) {
-                                var target = vhosts[host].target.split(":");
-                                payload.push('document.write(\'<img src="//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
-                             } else {
-                                payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
-                            }
-                        }
-                        payload.push('setTimeout(function() {');
-                        if (byIP) {
-                            if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
-                                var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
-                                payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
-                            } else {
-                                res.writeHead(404);
-                                console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
-                                return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
-                            }
-                        } else {
-                            payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '." + window.location.host;');
-                        }
-                        payload.push('}, 3 * 1000);');
-                        payload.push('</script>');
-                        payload.push('Redirecting after initializing session ...');
-                        payload = payload.join("\n");
-                        res.writeHead(200, {
-                            'Set-Cookie': 'x-pio-server-sid=' + sessionId,
-                            'Content-Type': 'text/html',
-                            'Content-Length': payload.length
-                        });
-                        res.end(payload);
-                        return;
-                    });
-                }
-                if (!sessionId || sessionId !== cookies["x-pio-server-sid"]) {
-                    res.writeHead(403);
-                    return res.end("Forbidden");
-                }
-                return proceed(null);
-            });
         }
 
         if (!vhosts[host] && host !== pioConfig.config.pio.hostname) {
@@ -465,8 +399,80 @@ console.log("GOT error:", err.code, err.stack);
             return res.end();
         }
 
-        return ensureAuthorized(function() {
+        // TODO: Hook in more generically and document this route.
+        if (urlParts.pathname === "/.set-session-cookie" && qs.sid) {
+            res.writeHead(204, {
+                'Set-Cookie': 'x-pio-server-sid=' + qs.sid,
+                'Content-Type': 'text/plain',
+                'Content-Length': "0"
+            });
+            return res.end();
+        }
+        if (vhosts[host] && vhosts[host].expose) {
+            return callback(null, host);
+        }
+        return ensureSession(null, cookies["x-pio-server-sid"], function(err, sessionId) {
+            if (err) return callback(err);
+            if (qs["auth-code"] === authCode) {
+                return ensureSession(qs["auth-code"], null, function(err, sessionId) {
+                    if (err) return callback(err);
+                    var payload = [
+                        '<script>'
+                    ];
+                    for (var host in vhosts) {
+                        // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
+                        if (byIP) {
+                            var target = vhosts[host].target.split(":");
+                            payload.push('document.write(\'<img src="//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                         } else {
+                            payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                        }
+                    }
+                    payload.push('setTimeout(function() {');
+                    if (byIP) {
+                        if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
+                            var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
+                            payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
+                        } else {
+                            res.writeHead(404);
+                            console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
+                            return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
+                        }
+                    } else {
+                        payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '." + window.location.host;');
+                    }
+                    payload.push('}, 3 * 1000);');
+                    payload.push('</script>');
+                    payload.push('Redirecting after initializing session ...');
+                    payload = payload.join("\n");
+                    res.writeHead(200, {
+                        'Set-Cookie': 'x-pio-server-sid=' + sessionId,
+                        'Content-Type': 'text/html',
+                        'Content-Length': payload.length
+                    });
+                    res.end(payload);
+                    return;
+                });
+            }
+            if (!sessionId || sessionId !== cookies["x-pio-server-sid"]) {
+                res.writeHead(403);
+                return res.end("Forbidden");
+            }
+            // User is authorized based on session cookie.
+            return callback(null, host);
+        });
+    }
 
+    var proxy = HTTP_PROXY.createProxyServer({});
+    var server = HTTP.createServer(function(req, res) {
+        function respond500(err) {
+            console.error("error request", req.url);
+            console.error(err.stack);
+            res.writeHead(500);
+            return res.end("Internal server error!");
+        }
+        return ensureAuthorized(req, res, function(err, host) {
+            if (err) return respond500(err);
             try {
 
                 // TODO: Hook in more generically and document this route.
@@ -480,6 +486,18 @@ console.log("GOT error:", err.code, err.stack);
                     console.error("Virtual host '" + host + "' not found!", req.url, req.headers);
                     return res.end("Virtual host '" + host + "' not found!");
                 }
+
+                // @see http://stackoverflow.com/a/19524949/330439
+                var ip =
+                    req.headers['x-forwarded-for'] || 
+                    req.connection.remoteAddress || 
+                    req.socket.remoteAddress ||
+                    req.connection.socket.remoteAddress;
+                req.headers['x-forwarded-for'] = ip + (
+                    req.headers['x-forwarded-for'] ?
+                        ", " + req.headers['x-forwarded-for'] :
+                        ""
+                );
 
 //                console.log("Proxy request", req.url, "for", "http://" + vhosts[host]);
 
@@ -497,11 +515,51 @@ console.log("GOT error:", err.code, err.stack);
             }
         });
     });
+    var wsProxies = {};
+    function getWsProxy(host, callback) {
+        if (wsProxies[host]) {
+            return callback(null, wsProxies[host]);
+        }
+        wsProxies[host] = HTTP_PROXY.createProxyServer({
+            target: "http://" + vhosts[host].target
+        });
+        return callback(null, wsProxies[host]);
+    }
+    server.on('upgrade', function (req, socket, head) {
+        function fail(err) {
+            console.log("websocket upgrade error", err.stack);
+            return socket.destroy();
+        }
+        return ensureAuthorized(req, {
+            writeHead: function(statusCode) {
+console.log("TODO: Act on WRITE HEAD", statusCode);
+            },
+            setHeader: function(name, value) {
+                // We ignore headers as client does not need them.
+            },
+            end: function (data) {
+console.log("TODO: Act on SEND END", data);
+            }
+        }, function(err, host) {
+            if (err) return fail(err);
+            try {
+                if (!vhosts[host]) {
+                    console.error("Virtual host '" + host + "' not found!", req.url, req.headers);
+                    return fail(new Error("Virtual host '" + host + "' not found!"));
+                }
+                console.log("Proxy WS connection for", "http://" + vhosts[host].target);
+                return getWsProxy(host, function(err, proxy) {
+                    if (err) return fail(err);
+                    return proxy.ws(req, socket, head);
+                });
+            } catch(err) {
+                return fail(err);
+            }
+        });
+    });
     var httpServer = server.listen(pioConfig.env.PORT, "0.0.0.0");
     console.log("Listening on: http://0.0.0.0:" + pioConfig.env.PORT);
     console.log("Instance identity: " + "http://" + pioConfig.config["pio"].hostname + ":" + pioConfig.env.PORT + "/.instance-id/" + pioConfig.config["pio"].instanceId);
-
-    // curl -v --header "Host: pio.catalog" http://54.198.95.219:8013/catalog/io.pinf.pio/a35593c282b9d36dba07104ae594dg3df43b841e
 
     return callback(null, {
         api: {
