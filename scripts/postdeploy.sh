@@ -6,6 +6,23 @@ NODE_VERSION="v0.10.26"
 CONFIGURED_DIR=$(date +%s%N)
 
 
+# Configure swap file
+
+if [ $(swapon -s | grep -ci "/swapfile" ) -gt 0 ]; then
+	echo "Swap file already configured"
+else
+	# @see https://www.digitalocean.com/community/tutorials/how-to-add-swap-on-ubuntu-12-04
+	echo "Configuring swap file"
+	sudo dd if=/dev/zero of=/swapfile bs=4086 count=256k
+	sudo mkswap /swapfile
+	sudo swapon /swapfile
+	echo "/swapfile       none    swap    sw      0       0" | sudo tee -a /etc/fstab
+	echo 10 | sudo tee /proc/sys/vm/swappiness
+	echo vm.swappiness = 10 | sudo tee -a /etc/sysctl.conf
+	sudo chown root:root /swapfile
+	sudo chmod 0600 /swapfile
+fi
+
 sudo apt-get -y update
 sudo apt-get -y install git-core realpath
 
