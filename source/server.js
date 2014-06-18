@@ -10,6 +10,7 @@ const DNODE = require('dnode');
 const SPAWN = require("child_process").spawn;
 const DEEPMERGE = require("deepmerge");
 const UUID = require("uuid");
+const REQUEST = require("request");
 const HTTP_PROXY = require("http-proxy");
 const CRYPTO = require("crypto");
 const MEMCACHED = require('memcached');
@@ -79,42 +80,56 @@ function main(callback) {
     }
     function makeSession(callback) {
         var id = UUID.v4();
-        console.log("Create new session!");
+        console.log("Create new session!", id);
         if (memcached) {
             // TODO: Configure session timeout.
-            return memcached.set(id, "", 60 * 60, function (err) {
+            return memcached.set(id, {}, 60 * 60, function (err) {
                 if (err) return callback(err);
-                sessions[id] = "";
+                sessions[id] = {};
                 return callback(null, id);
             });
         }
-        sessions[id] = "";
+        sessions[id] = {};
         return callback(null, id);
     }
-    function ensureSession(_authCode, id, callback) {
+    function ensureSession(id, callback) {
+        function storeInSession(id) {
+            return function (data, callback) {
+                return memcached.set(id, data, 60 * 60, function (err) {
+                    if (err) return callback(err);
+                    for (var name in data) {
+                        sessions[id][name] = data[name];
+                    }
+                    return callback(null);
+                });
+            };
+        }
         if (!id) {
-            if (_authCode === authCode) {
-                return makeSession(callback);
-            }
+            return makeSession(function(err, id) {
+                if (err) return callback(err);
+                return callback(null, id, storeInSession(id));
+            });
             // Not authorized: No session id and no auth code to create session id!
-            return callback(null, false);
+            return callback(null, false, function(data, callback) {
+                return callback(null);
+            });
         }
         if (typeof sessions[id] !== "undefined") {
-            return callback(null, id);
+            return callback(null, id, storeInSession(id));
         }
         if (memcached) {
             return memcached.get(id, function(err, data) {
                 if (err) {
                     console.error("error getting from memcached", err);
                     // Not authorized: session id not found!
-                    return callback(null, false);
+                    return callback(null, false, storeInSession(id));
                 }
                 sessions[id] = data;
-                return callback(null, id);
+                return callback(null, id, storeInSession(id));
             });
         }
         // Not authorized: session id not found!
-        return callback(null, false);
+        return callback(null, false, storeInSession(id));
     }
 
 
@@ -167,6 +182,10 @@ console.log("GOT error:", err.code, err.stack);
                         var path = PATH.join(args.servicePath, "live/.pio.json");
                         return FS.exists(path, function(exists) {
                             if (!exists) {
+                                return callback(null, null);
+                                /*
+                                DEPRECATED: If live pio config not found then service is not properly deployed
+
                                 path = PATH.join(args.servicePath, "sync/.pio.json");
                                 return FS.exists(path, function(exists) {
                                     if (!exists) {
@@ -174,6 +193,7 @@ console.log("GOT error:", err.code, err.stack);
                                     }
                                     return FS.readJson(path, callback);
                                 });
+                                */
                             }
                             return FS.readJson(path, callback);
                         });
@@ -325,7 +345,7 @@ console.log("GOT error:", err.code, err.stack);
 
 
     var vhosts = {};
-    for (var pluginId in  pioConfig["config.plugin"]) {
+    for (var pluginId in pioConfig["config.plugin"]) {
         for (var hostname in pioConfig["config.plugin"][pluginId]) {
             if (pioConfig["config.plugin"][pluginId].vhosts) {
                 var _vhosts = pioConfig["config.plugin"][pluginId].vhosts;
@@ -343,6 +363,7 @@ console.log("GOT error:", err.code, err.stack);
     console.log("vhosts", JSON.stringify(vhosts, null, 4));
 
 
+    var temporaryAuthCodes = {};
 
     function ensureAuthorized(req, res, callback) {
 
@@ -400,7 +421,10 @@ console.log("GOT error:", err.code, err.stack);
         }
 
         // TODO: Hook in more generically and document this route.
-        if (urlParts.pathname === "/.set-session-cookie" && qs.sid) {
+        if (
+            urlParts.pathname === "/.set-session-cookie" &&
+            qs.sid
+        ) {
             res.writeHead(204, {
                 'Set-Cookie': 'x-pio-server-sid=' + qs.sid,
                 'Content-Type': 'text/plain',
@@ -408,57 +432,171 @@ console.log("GOT error:", err.code, err.stack);
             });
             return res.end();
         }
+        if (
+            urlParts.pathname === "/.get-session-authorized" &&
+            qs.sid &&
+            sessions[qs.sid]
+        ) {
+            var payload = JSON.stringify(sessions[qs.sid].authorized || null, null, 4);
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': payload.length
+            });
+            return res.end(payload);
+        }
+
         if (vhosts[host] && vhosts[host].expose) {
             return callback(null, host);
         }
-        return ensureSession(null, cookies["x-pio-server-sid"], function(err, sessionId) {
+        return ensureSession(cookies["x-pio-server-sid"], function(err, sessionId, storeInSession) {
             if (err) return callback(err);
-            if (qs["auth-code"] === authCode) {
-                return ensureSession(qs["auth-code"], null, function(err, sessionId) {
+
+            if (req.url === "/favicon.ico") {
+                // User is authorized to always see this file.
+                return callback(null, host);
+            }
+
+            function authorizeSession(sessionId, callback) {
+                var temporaryAuthCode = UUID.v4();
+                return REQUEST({
+                    url: pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + temporaryAuthCode,
+                    headers: {
+                        "Accept": "application/json"
+                    }
+                }, function(err, _res, body) {
                     if (err) return callback(err);
-                    var payload = [
-                        '<script>'
-                    ];
-                    for (var host in vhosts) {
-                        // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
+                    if (_res.statusCode !== 200 || !body) {
+                        res.writeHead(403);
+                        return res.end("Forbidden");
+                    }
+                    body = JSON.parse(body);
+                    if (body["$status"] === 403) {
+                        temporaryAuthCodes[temporaryAuthCode] = true;
+                        var sessionUrlParts = URL.parse(pioConfig.config.authorizedSessionUrl);
+                        var locationParts = URL.parse("http://" + sessionUrlParts.host + body["$location"]);
+                        delete locationParts.search;
+                        locationParts.query = QUERYSTRING.parse(locationParts.query);
+                        var urlParts = URL.parse(req.url);
+                        var query = QUERYSTRING.parse(urlParts.query || "");
+                        delete query["auth-code"];
+                        query["session-auth-code"] = temporaryAuthCode;
+                        locationParts.query.callback = "http://" + (pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname) + ":" + pioConfig.env.PORT + urlParts.pathname + "?" + QUERYSTRING.stringify(query);
+                        locationParts.query.t = Date.now();                        
+                        console.log("Redirecting to:", URL.format(locationParts), "(for session " + sessionId + ")");
+                        res.writeHead(302, {
+                            "location": URL.format(locationParts)
+                        });
+                        return res.end();
+                    }
+                    if (body["$status"] !== 200) {
+                        res.writeHead(403);
+                        console.error("Forbidden:", body);
+                        return res.end("Forbidden");
+                    }
+                    // User is authorized based on session url header.
+                    return ensureSessionForAuthCode(temporaryAuthCode, null, callback);
+                });                
+            }
+
+            function ensureSessionForAuthCode(authCode, authorized, callback) {
+                return ensureSession(null, function(err, sessionId, storeInSession) {
+                    if (err) return callback(err);
+                    function ensureAuthorizedInSession(callback) {
+                        if (authorized === "FETCH") {
+                            if (pioConfig.config.authorizedSessionUrl) {
+                                return authorizeSession(sessionId, callback);
+                            }
+                            return callback(null);
+                        }                       
+                        return storeInSession({
+                            authorized: authorized
+                        }, callback);                       
+                    }
+                    return ensureAuthorizedInSession(function(err) {
+                        if (err) return callback(err);
+                        var payload = [
+                            '<script>'
+                        ];
+                        for (var host in vhosts) {
+                            // TODO: Use ajax and only continue until we confirm session has been initialized on all vhosts.
+                            if (byIP) {
+                                var target = vhosts[host].target.split(":");
+                                payload.push('document.write(\'<img src="//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                             } else {
+                                payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
+                            }
+                        }
+                        payload.push('setTimeout(function() {');
                         if (byIP) {
-                            var target = vhosts[host].target.split(":");
-                            payload.push('document.write(\'<img src="//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
-                         } else {
-                            payload.push('document.write(\'<img src="//' + host + ':\' + window.location.port + \'/.set-session-cookie?sid=' + sessionId + '" width="0" height="0">\');');
-                        }
-                    }
-                    payload.push('setTimeout(function() {');
-                    if (byIP) {
-                        if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
-                            var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
-                            payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
+                            if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
+                                var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
+                                payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
+                            } else {
+                                res.writeHead(404);
+                                console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
+                                return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
+                            }
                         } else {
-                            res.writeHead(404);
-                            console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
-                            return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
+                            payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '.' + pioConfig.config['pio'].hostname + ":" + pioConfig.env.PORT + '";');
                         }
-                    } else {
-                        payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '." + window.location.host;');
-                    }
-                    payload.push('}, 3 * 1000);');
-                    payload.push('</script>');
-                    payload.push('Redirecting after initializing session ...');
-                    payload = payload.join("\n");
-                    res.writeHead(200, {
-                        'Set-Cookie': 'x-pio-server-sid=' + sessionId,
-                        'Content-Type': 'text/html',
-                        'Content-Length': payload.length
+                        payload.push('}, 3 * 1000);');
+                        payload.push('</script>');
+                        payload.push('Redirecting after initializing session ...');
+                        payload = payload.join("\n");
+                        res.writeHead(200, {
+                            'Set-Cookie': 'x-pio-server-sid=' + sessionId,
+                            'Content-Type': 'text/html',
+                            'Content-Length': payload.length
+                        });
+                        res.end(payload);
+                        return;
                     });
-                    res.end(payload);
-                    return;
                 });
             }
+            if (qs["auth-code"] === authCode) {                
+                return ensureSessionForAuthCode(authCode, "FETCH", callback);
+            } else
+            if (temporaryAuthCodes[qs["session-auth-code"]]) {
+                // TODO: Ensure auth code is not too old!
+                delete temporaryAuthCodes[qs["session-auth-code"]];
+
+                if (pioConfig.config.authorizedSessionUrl) {
+
+                    console.log("Fetch info for auth code", qs["session-auth-code"]);
+
+                    return REQUEST({
+                        url: pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"],
+                        headers: {
+                            "Accept": "application/json"
+                        }
+                    }, function(err, _res, body) {
+                        if (err) return callback(err);
+                        if (_res.statusCode !== 200 || !body) {
+                            res.writeHead(403);
+                            return res.end("Forbidden");
+                        }
+                        body = JSON.parse(body);
+                        if (body["$status"] !== 200) {
+                            res.writeHead(403);
+                            console.error("Forbidden:", body);
+                            return res.end("Forbidden");
+                        }
+                        // User is authorized based on session url header.
+                        return ensureSessionForAuthCode(qs["session-auth-code"], body, callback);
+                    });
+                }
+            }
             if (!sessionId || sessionId !== cookies["x-pio-server-sid"]) {
+                if (pioConfig.config.authorizedSessionUrl) {
+                    return authorizeSession(sessionId, callback);
+                }
                 res.writeHead(403);
                 return res.end("Forbidden");
             }
             // User is authorized based on session cookie.
+            if (sessions[sessionId] && sessions[sessionId].authorized) {
+                req.headers["x-session-url"] = "http://" + (pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname) + ":" + pioConfig.env.PORT + "/.get-session-authorized?sid=" + sessionId;
+            }
             return callback(null, host);
         });
     }
