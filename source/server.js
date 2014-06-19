@@ -458,8 +458,9 @@ console.log("GOT error:", err.code, err.stack);
 
             function authorizeSession(sessionId, callback) {
                 var temporaryAuthCode = UUID.v4();
+                var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + temporaryAuthCode;
                 return REQUEST({
-                    url: pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + temporaryAuthCode,
+                    url: url,
                     headers: {
                         "Accept": "application/json"
                     }
@@ -469,7 +470,12 @@ console.log("GOT error:", err.code, err.stack);
                         res.writeHead(403);
                         return res.end("Forbidden");
                     }
-                    body = JSON.parse(body);
+                    try {
+                        body = JSON.parse(body);
+                    } catch(err) {
+                        console.log("body", body);
+                        return callback(new Error("Error '" + err.message + "' parsing JSON reponse to: " + url));
+                    }
                     if (body["$status"] === 403) {
                         temporaryAuthCodes[temporaryAuthCode] = true;
                         var sessionUrlParts = URL.parse(pioConfig.config.authorizedSessionUrl);
