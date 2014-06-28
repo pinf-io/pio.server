@@ -422,6 +422,18 @@ console.log("GOT error:", err.code, err.stack);
             return res.end();
         }
 
+        if (qs["ap"]) {
+            var accessProof = CRYPTO.createHash("sha1");                    
+            accessProof.update(["access-proof", authCode, pioConfig.config.pio.hostname, urlParts.pathname].join(":"));
+            if (qs["ap"] === accessProof.digest("hex")) {
+                console.log("Valid access proof!");
+                return callback(null, host);
+            } else {
+                console.log("Warning: Access proof '" + qs["ap"] + "' is not valid!");
+            }
+        }
+
+
         // TODO: Hook in more generically and document this route.
         if (
             urlParts.pathname === "/.set-session-cookie" &&
