@@ -158,7 +158,9 @@ console.log("GOT error:", err.code, err.stack);
                 return proceed();
             }
             // TODO: If rejecting same IP too often block it for a while.
-            var err = new Error("Not authorized!");
+            console.log("Supplied auth code:", args.$authCode);
+            console.log("Configured auth code:", authCode);
+            var err = new Error("Not authorized! Auth code mismatch!");
             err.code = 403;
             return callback(err);
         }
@@ -468,7 +470,7 @@ console.log("GOT error:", err.code, err.stack);
                     if (err) return callback(err);
                     if (_res.statusCode !== 200 || !body) {
                         res.writeHead(403);
-                        return res.end("Forbidden");
+                        return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
                     }
                     try {
                         body = JSON.parse(body);
@@ -497,7 +499,7 @@ console.log("GOT error:", err.code, err.stack);
                     if (body["$status"] !== 200) {
                         res.writeHead(403);
                         console.error("Forbidden:", body);
-                        return res.end("Forbidden");
+                        return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                     }
                     // User is authorized based on session url header.
                     return ensureSessionForAuthCode(temporaryAuthCode, null, callback);
@@ -559,6 +561,10 @@ console.log("GOT error:", err.code, err.stack);
                     });
                 });
             }
+//            if (typeof qs["auth-code"] === "string") {
+//                console.log("Supplied auth code:", qs["auth-code"]);
+//                console.log("Configured auth code:", authCode);
+//            }
             if (qs["auth-code"] === authCode) {                
                 return ensureSessionForAuthCode(authCode, "FETCH", callback);
             } else
@@ -570,8 +576,9 @@ console.log("GOT error:", err.code, err.stack);
 
                     console.log("Fetch info for auth code", qs["session-auth-code"]);
 
+                    var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"];
                     return REQUEST({
-                        url: pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"],
+                        url: url,
                         headers: {
                             "Accept": "application/json"
                         }
@@ -579,13 +586,13 @@ console.log("GOT error:", err.code, err.stack);
                         if (err) return callback(err);
                         if (_res.statusCode !== 200 || !body) {
                             res.writeHead(403);
-                            return res.end("Forbidden");
+                            return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
                         }
                         body = JSON.parse(body);
                         if (body["$status"] !== 200) {
                             res.writeHead(403);
                             console.error("Forbidden:", body);
-                            return res.end("Forbidden");
+                            return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                         }
                         // User is authorized based on session url header.
                         return ensureSessionForAuthCode(qs["session-auth-code"], body, callback);
@@ -597,7 +604,7 @@ console.log("GOT error:", err.code, err.stack);
                     return authorizeSession(sessionId, callback);
                 }
                 res.writeHead(403);
-                return res.end("Forbidden");
+                return res.end("Forbidden: Invalid auth-code and no temporary auth code");
             }
             // User is authorized based on session cookie.
             if (sessions[sessionId] && sessions[sessionId].authorized) {
