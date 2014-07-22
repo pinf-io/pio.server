@@ -471,6 +471,7 @@ console.log("GOT error:", err.code, err.stack);
             }
 
             function authorizeSession(sessionId, callback) {
+                console.log("authorizeSession", sessionId);
                 var temporaryAuthCode = UUID.v4();
                 var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + temporaryAuthCode;
                 return REQUEST({
@@ -514,11 +515,12 @@ console.log("GOT error:", err.code, err.stack);
                         return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                     }
                     // User is authorized based on session url header.
-                    return ensureSessionForAuthCode(temporaryAuthCode, null, callback);
+                    return ensureSessionForAuthCode(null, null, callback);
                 });                
             }
 
             function ensureSessionForAuthCode(authCode, authorized, callback) {
+                authCode = null;
                 return ensureSession(null, function(err, sessionId, storeInSession) {
                     if (err) return callback(err);
                     function ensureAuthorizedInSession(callback) {
@@ -527,7 +529,7 @@ console.log("GOT error:", err.code, err.stack);
                                 return authorizeSession(sessionId, callback);
                             }
                             return callback(null);
-                        }                       
+                        } 
                         return storeInSession({
                             authorized: authorized
                         }, callback);                       
@@ -578,7 +580,7 @@ console.log("GOT error:", err.code, err.stack);
 //                console.log("Configured auth code:", authCode);
 //            }
             if (qs["auth-code"] === authCode) {                
-                return ensureSessionForAuthCode(authCode, "FETCH", callback);
+                return ensureSessionForAuthCode(null, "FETCH", callback);
             } else
             if (temporaryAuthCodes[qs["session-auth-code"]]) {
                 // TODO: Ensure auth code is not too old!
@@ -607,7 +609,7 @@ console.log("GOT error:", err.code, err.stack);
                             return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                         }
                         // User is authorized based on session url header.
-                        return ensureSessionForAuthCode(qs["session-auth-code"], body, callback);
+                        return ensureSessionForAuthCode(null, body, callback);
                     });
                 }
             }
@@ -621,6 +623,58 @@ console.log("GOT error:", err.code, err.stack);
             // User is authorized based on session cookie.
             if (sessions[sessionId] && sessions[sessionId].authorized) {
                 req.headers["x-session-url"] = "http://" + (pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname) + ":" + pioConfig.env.PORT + "/.get-session-authorized?sid=" + sessionId;
+            }
+            // See if session authorization should be reloaded
+            if (qs[".reload-session-authorization"] === "true") {
+                console.log("Want to reload session.");
+                console.log("pioConfig.config.authorizedSessionUrl", pioConfig.config.authorizedSessionUrl);
+                console.log("sessions[sessionId]", JSON.stringify(sessions[sessionId], null, 4));
+                if (pioConfig.config.authorizedSessionUrl && sessions[sessionId] && sessions[sessionId].authorized.links && sessions[sessionId].authorized.links.fetch) {
+                    var url = sessions[sessionId].authorized.links.fetch;
+                    console.log("Reload session authorization using:", url);
+                    return REQUEST({
+                        url: url,
+                        headers: {
+                            "Accept": "application/json"
+                        }
+                    }, function(err, _res, body) {
+                        if (err) return callback(err);
+                        function reauthorizeSession(callback) {
+                            return storeInSession({
+                                authorized: null
+                            }, function(err) {
+                                if (err) return callback(err);
+                                return authorizeSession(sessionId, callback);
+                            });
+                        }
+                        if (_res.statusCode !== 200 || !body) {
+                            console.error("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
+                            return reauthorizeSession(function (err) {
+                                if (err) return next(err);
+//                                return res.redirect(req.url);
+                                return callback(null, host);
+                            });
+                        }
+                        body = JSON.parse(body);
+                        if (body["$status"] !== 200) {
+                            console.error("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
+                            return reauthorizeSession(function (err) {
+                                if (err) return next(err);
+//                                return res.redirect(req.url);
+                                return callback(null, host);
+                            });
+                        }
+                        // User is authorized based on session url header.
+                        return storeInSession({
+                            authorized: body
+                        }, function(err) {
+                            if (err) return next(err);
+                            return callback(null, host);
+                        });                               
+                    });
+                } else {
+                    console.error("Warning: cannot reload session. Not all needed session info is available.");
+                }
             }
             return callback(null, host);
         });
