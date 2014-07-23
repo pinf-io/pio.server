@@ -92,6 +92,13 @@ function main(callback) {
         sessions[id] = {};
         return callback(null, id);
     }
+    function destroySession(id, callback) {
+        delete sessions[id];
+        return memcached.del(id, function (err) {
+            if (err) return callback(err);
+            return callback(null);
+        });
+    }
     function ensureSession(id, callback) {
         function storeInSession(id) {
             return function (data, callback) {
@@ -448,15 +455,20 @@ console.log("GOT error:", err.code, err.stack);
         }
         if (
             urlParts.pathname === "/.get-session-authorized" &&
-            qs.sid &&
-            sessions[qs.sid]
+            qs.sid
         ) {
-            var payload = JSON.stringify(sessions[qs.sid].authorized || null, null, 4);
-            res.writeHead(200, {
-                'Content-Type': 'application/json',
-                'Content-Length': payload.length
-            });
-            return res.end(payload);
+            console.log("Looking for session id '" + qs.sid + "' in active sessions: " + JSON.stringify(Object.keys(sessions), null, 4));
+            if (sessions[qs.sid]) {
+                console.log("Found session ID: " + qs.sid);
+                var payload = JSON.stringify(sessions[qs.sid].authorized || null, null, 4);
+                res.writeHead(200, {
+                    'Content-Type': 'application/json',
+                    'Content-Length': payload.length
+                });
+                return res.end(payload);
+            } else {
+                console.log("Did NOT find session ID: " + qs.sid);
+            }
         }
 
         if (vhosts[host] && vhosts[host].expose) {
@@ -582,36 +594,53 @@ console.log("GOT error:", err.code, err.stack);
             if (qs["auth-code"] === authCode) {                
                 return ensureSessionForAuthCode(null, "FETCH", callback);
             } else
-            if (temporaryAuthCodes[qs["session-auth-code"]]) {
-                // TODO: Ensure auth code is not too old!
-                delete temporaryAuthCodes[qs["session-auth-code"]];
+            if (qs["session-auth-code"]) {
+
+                console.log("Found session auth code in URL:", qs["session-auth-code"]);
+                console.log("pioConfig.config.authorizedSessionUrl", pioConfig.config.authorizedSessionUrl);
 
                 if (pioConfig.config.authorizedSessionUrl) {
 
-                    console.log("Fetch info for auth code", qs["session-auth-code"]);
+                    function verifyAuthCode() {
 
-                    var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"];
-                    return REQUEST({
-                        url: url,
-                        headers: {
-                            "Accept": "application/json"
+                        console.log("Fetch info for auth code", qs["session-auth-code"]);
+
+                        var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"];
+                        return REQUEST({
+                            url: url,
+                            headers: {
+                                "Accept": "application/json"
+                            }
+                        }, function(err, _res, body) {
+                            if (err) return callback(err);
+                            if (_res.statusCode !== 200 || !body) {
+                                res.writeHead(403);
+                                return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
+                            }
+                            body = JSON.parse(body);
+                            if (body["$status"] !== 200) {
+                                res.writeHead(403);
+                                console.error("Forbidden:", body);
+                                return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
+                            }
+                            // User is authorized based on session url header.
+                            return ensureSessionForAuthCode(null, body, callback);
+                        });
+                    }
+
+                    if (temporaryAuthCodes[qs["session-auth-code"]]) {
+                        // TODO: Ensure auth code is not too old!
+                        delete temporaryAuthCodes[qs["session-auth-code"]];
+                        return verifyAuthCode();
+                    } else
+                    if (qs["session-auth-code-ap"]) {
+                        var accessProof = CRYPTO.createHash("sha1");                    
+                        accessProof.update(["access-proof", authCode, pioConfig.config.pio.hostname].join(":"));
+                        if (qs["session-auth-code-ap"] === accessProof.digest("hex")) {
+                            return verifyAuthCode();
                         }
-                    }, function(err, _res, body) {
-                        if (err) return callback(err);
-                        if (_res.statusCode !== 200 || !body) {
-                            res.writeHead(403);
-                            return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
-                        }
-                        body = JSON.parse(body);
-                        if (body["$status"] !== 200) {
-                            res.writeHead(403);
-                            console.error("Forbidden:", body);
-                            return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
-                        }
-                        // User is authorized based on session url header.
-                        return ensureSessionForAuthCode(null, body, callback);
-                    });
-                }
+                    }
+                }                
             }
             if (!sessionId || sessionId !== cookies["x-pio-server-sid"]) {
                 if (pioConfig.config.authorizedSessionUrl) {
@@ -639,6 +668,9 @@ console.log("GOT error:", err.code, err.stack);
                         }
                     }, function(err, _res, body) {
                         if (err) return callback(err);
+
+                        console.log("got body back", body);
+
                         function reauthorizeSession(callback) {
                             return storeInSession({
                                 authorized: null
@@ -664,6 +696,7 @@ console.log("GOT error:", err.code, err.stack);
                                 return callback(null, host);
                             });
                         }
+                        console.log("All authorized!");
                         // User is authorized based on session url header.
                         return storeInSession({
                             authorized: body
@@ -675,6 +708,18 @@ console.log("GOT error:", err.code, err.stack);
                 } else {
                     console.error("Warning: cannot reload session. Not all needed session info is available.");
                 }
+            } else
+            if (urlParts.pathname === "/.reset-session") {
+                console.log("Reset session for ID: " + sessionId);
+                return destroySession(sessionId, function (err) {
+                    if (err) return next(err);
+                    var url = pioConfig.config.logoutSessionUrl || "/";
+                    console.log("Redirecting to: " + url);
+                    res.writeHead(302, {
+                        "location": url
+                    });
+                    return res.end();
+                });
             }
             return callback(null, host);
         });
