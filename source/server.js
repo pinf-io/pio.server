@@ -457,9 +457,9 @@ console.log("GOT error:", err.code, err.stack);
             urlParts.pathname === "/.get-session-authorized" &&
             qs.sid
         ) {
-            console.log("Looking for session id '" + qs.sid + "' in active sessions: " + JSON.stringify(Object.keys(sessions), null, 4));
+//            console.log("Looking for session id '" + qs.sid + "' in active sessions: " + JSON.stringify(Object.keys(sessions), null, 4));
             if (sessions[qs.sid]) {
-                console.log("Found session ID: " + qs.sid);
+//                console.log("Found session ID: " + qs.sid);
                 var payload = JSON.stringify(sessions[qs.sid].authorized || null, null, 4);
                 res.writeHead(200, {
                     'Content-Type': 'application/json',
@@ -561,17 +561,20 @@ console.log("GOT error:", err.code, err.stack);
                             }
                         }
                         payload.push('setTimeout(function() {');
+                        var redirectUrl = null;
                         if (byIP) {
+                            redirectUrl = '//' + pioConfig.config['pio.vm'].ip + ':' + target[1];
                             if (vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname]) {
                                 var target = vhosts[pioConfig.config.adminSubdomain + "." + pioConfig.config['pio'].hostname].target.split(":");
-                                payload.push('window.location.href = "//' + pioConfig.config['pio.vm'].ip + ':' + target[1] + '";');
+                                payload.push('window.location.href = "' + redirectUrl + '";');
                             } else {
                                 res.writeHead(404);
                                 console.error("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!", req.url, req.headers, vhosts);
                                 return res.end("Admin subdomain '" + pioConfig.config.adminSubdomain + "' not found in configured vhosts!");
                             }
                         } else {
-                            payload.push('window.location.href = "//' + pioConfig.config.adminSubdomain + '.' + pioConfig.config['pio'].hostname + ":" + pioConfig.env.PORT + '";');
+                            redirectUrl = '//' + pioConfig.config.adminSubdomain + '.' + pioConfig.config['pio'].hostname + ":" + pioConfig.env.PORT;
+                            payload.push('window.location.href = "' + redirectUrl + '";');
                         }
                         payload.push('}, 3 * 1000);');
                         payload.push('</script>');
@@ -583,6 +586,7 @@ console.log("GOT error:", err.code, err.stack);
                             'Content-Length': payload.length
                         });
                         res.end(payload);
+                        console.log("Redirecting to '" + redirectUrl + "' after initializing session ...");
                         return;
                     });
                 });
@@ -606,6 +610,9 @@ console.log("GOT error:", err.code, err.stack);
                         console.log("Fetch info for auth code", qs["session-auth-code"]);
 
                         var url = pioConfig.config.authorizedSessionUrl + "?session-auth-code=" + qs["session-auth-code"];
+
+                        console.log("Calling URL:", url);
+
                         return REQUEST({
                             url: url,
                             headers: {
@@ -614,16 +621,19 @@ console.log("GOT error:", err.code, err.stack);
                         }, function(err, _res, body) {
                             if (err) return callback(err);
                             if (_res.statusCode !== 200 || !body) {
+                                console.log("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
                                 res.writeHead(403);
                                 return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
                             }
                             body = JSON.parse(body);
                             if (body["$status"] !== 200) {
+                                console.log("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                                 res.writeHead(403);
                                 console.error("Forbidden:", body);
                                 return res.end("Forbidden: Got protocol status '" + body["$status"] + "' when calling: " + url);
                             }
                             // User is authorized based on session url header.
+                            console.log("User is authorized based on session url header.");
                             return ensureSessionForAuthCode(null, body, callback);
                         });
                     }
@@ -728,7 +738,7 @@ console.log("GOT error:", err.code, err.stack);
     var proxy = HTTP_PROXY.createProxyServer({});
     var server = HTTP.createServer(function(req, res) {
         function respond500(err) {
-            console.error("error request", req.url);
+            console.error("Got error for request", req.url);
             console.error(err.stack);
             res.writeHead(500);
             return res.end("Internal server error!");
