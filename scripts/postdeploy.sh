@@ -13,7 +13,7 @@ if [ $(swapon -s | grep -ci "/swapfile" ) -gt 0 ]; then
 else
 	# @see https://www.digitalocean.com/community/tutorials/how-to-add-swap-on-ubuntu-12-04
 	echo "Configuring swap file"
-	sudo dd if=/dev/zero of=/swapfile bs=4086 count=256k
+	sudo dd if=/dev/zero of=/swapfile bs=1024 count=4096k
 	sudo mkswap /swapfile
 	sudo swapon /swapfile
 	echo "/swapfile       none    swap    sw      0       0" | sudo tee -a /etc/fstab
