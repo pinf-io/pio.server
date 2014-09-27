@@ -1,7 +1,7 @@
 #!/bin/bash -e
 
 MON_VERSION="1.2.3"
-NODE_VERSION="v0.10.26"
+NODE_VERSION="v0.10.32"
 
 CONFIGURED_DIR=$(date +%s%N)
 
