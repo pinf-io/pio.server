@@ -735,6 +735,9 @@ console.log("GOT error:", err.code, err.stack);
         });
     }
 
+
+    var requestCount = 0;
+
     var proxy = HTTP_PROXY.createProxyServer({});
     var server = HTTP.createServer(function(req, res) {
         function respond500(err) {
@@ -743,6 +746,32 @@ console.log("GOT error:", err.code, err.stack);
             res.writeHead(500);
             return res.end("Internal server error!");
         }
+
+
+        if (req.url === "/_internal_status") {
+
+            if (!req.headers["x-auth-token"]) {
+                return next();
+            }
+            if (req.headers["x-auth-token"] !== pioConfig.config["pio.service"].config.internalStatusAuthToken) {
+                return next(new Error("'x-auth-token' is invalid"));
+            }
+
+            var payload = {
+                process: {
+                    memoryUsage: process.memoryUsage()
+                },
+                server: {
+                    requestCount: requestCount
+                }
+            };
+
+            return res.end(JSON.stringify(payload, null, 4));
+        }
+
+        requestCount += 1;
+
+
         return ensureAuthorized(req, res, function(err, host) {
             if (err) return respond500(err);
             try {
