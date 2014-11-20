@@ -492,7 +492,11 @@ console.log("GOT error:", err.code, err.stack);
                         "Accept": "application/json"
                     }
                 }, function(err, _res, body) {
-                    if (err) return callback(err);
+                    if (err) {
+                        err.message += " (while fetching '" + url + "')";
+                        err.stack += "\n(while fetching '" + url + "')";
+                        return callback(err);
+                    }
                     if (_res.statusCode !== 200 || !body) {
                         res.writeHead(403);
                         return res.end("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
@@ -619,7 +623,11 @@ console.log("GOT error:", err.code, err.stack);
                                 "Accept": "application/json"
                             }
                         }, function(err, _res, body) {
-                            if (err) return callback(err);
+                            if (err) {
+                                err.message += " (while fetching '" + url + "')";
+                                err.stack += "\n(while fetching '" + url + "')";
+                                return callback(err);
+                            }
                             if (_res.statusCode !== 200 || !body) {
                                 console.log("Forbidden: Got HTTP status '" + _res.statusCode + "' when calling: " + url);
                                 res.writeHead(403);
@@ -677,7 +685,11 @@ console.log("GOT error:", err.code, err.stack);
                             "Accept": "application/json"
                         }
                     }, function(err, _res, body) {
-                        if (err) return callback(err);
+                        if (err) {
+                            err.message += " (while fetching '" + url + "')";
+                            err.stack += "\n(while fetching '" + url + "')";
+                            return callback(err);
+                        }
 
                         console.log("got body back", body);
 
@@ -740,9 +752,9 @@ console.log("GOT error:", err.code, err.stack);
 
     var proxy = HTTP_PROXY.createProxyServer({});
     var server = HTTP.createServer(function(req, res) {
-        function respond500(err) {
-            console.error("Got error for request", req.url);
-            console.error(err.stack);
+        function respond500(err) {            
+            console.error("Got error for request", req.headers.host, req.url);
+            console.error(err.stack, "raised at", new Error().stack);
             res.writeHead(500);
             return res.end("Internal server error!");
         }
